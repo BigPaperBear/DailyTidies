@@ -8,16 +8,21 @@ The addon learns Maerys' quests automatically as you play. You do not need to se
 
 ## Features
 
-- Learns quests automatically. Picks up every quest Maerys offers, including new stages as your daily chains go up.
-- Daily chores: each daily chain shows every known stage (I, II, III, and so on) with a status of done, in progress, or not reached yet.
+**Tracking**
+- Learns quests automatically, no setup needed. New stages get picked up as your daily chains go up.
+- Daily chores: each chain shows every known stage (I, II, III, and so on) with a status of done, in progress, or not reached yet.
 - Weekly raid kills: shows every known weekly quest with its status and a count of how many are done.
-- Auto-accept: picking one quest from Maerys automatically moves you on to the next one, so opening her once picks up everything.
+- Shares newly found quest stages with other players running the addon, so a stage one person finds shows up for everyone else without an update.
+
+**Automation**
+- Auto-accept: no need to click the quest or press Accept yourself, it happens the moment her dialog opens. You still need to talk to her again for each quest she offers, you just don't have to click through each one.
 - Auto turn-in (off by default): hands in a finished quest right away, but only when there is a single reward, never when you have to choose one.
 - Settings window: right-click the minimap button to turn auto-accept and auto turn-in on or off, and to pick which quest chains get auto-accepted.
-- Shares newly found quest stages with other players running the addon, so a stage one person finds shows up for everyone else without an update.
-- Opens automatically when you log in. You can move it and resize it, and it remembers both for next time. It will not go off-screen.
+
+**Window**
+- Opens automatically when you log in. You can move and resize it, and it remembers both for next time. It will not go off-screen.
 - Minimap button: left-click to open or close the tracker, right-click for settings. Works with minimap button addons that collect other buttons.
-- Discovery log: `/dtidy log` shows a raw log you can copy. Useful if you want to report a new quest stage.
+- Debug logging (off by default, in Settings): turns on detailed tracing for bug reports, viewable with `/dtidy diag`.
 
 ## Install
 
@@ -30,10 +35,9 @@ The addon learns Maerys' quests automatically as you play. You do not need to se
 | Command | Action |
 |---|---|
 | `/dtidy` | Toggle the tracker window |
-| `/dtidy log` | Toggle the raw copyable discovery log |
-| `/dtidy clear` | Clear the discovery log |
+| `/dtidy diag` | Show a copyable diagnostic report, for bug reports |
+| `/dtidy clear` | Clear the diagnostic/debug log |
 | `/dtidy autoaccept` | Turn auto-accept on or off (also available in Settings) |
-| `/dtidy diag` | Print a diagnostic report to the log, for bug reports |
 
 ## Compatibility
 

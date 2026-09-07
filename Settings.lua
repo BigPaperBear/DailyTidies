@@ -135,8 +135,17 @@ local function CreateSettingsFrame()
     autoTurnInCB:SetPoint("TOPLEFT", autoAcceptCB, "BOTTOMLEFT", 0, -2)
     autoTurnInCB.text:SetText("Auto turn-in")
 
+    -- Off by default: routine per-event tracing is skipped entirely
+    -- unless this is on, so a normal player's log and chat don't fill up
+    -- with lines they never asked for. /dtidy diag always logs regardless.
+    local debugCB = CreateCheckbox(f,
+        function() return DailyTidiesDB.debugLogging == true end,
+        function(v) DailyTidiesDB.debugLogging = v end)
+    debugCB:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 0, -2)
+    debugCB.text:SetText("Debug logging")
+
     local chainsHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    chainsHeader:SetPoint("TOPLEFT", autoTurnInCB, "BOTTOMLEFT", 4, -12)
+    chainsHeader:SetPoint("TOPLEFT", debugCB, "BOTTOMLEFT", 4, -12)
     chainsHeader:SetText("|cFF9999FFAuto-accept these chains:|r")
 
     local scrollFrame = CreateFrame("ScrollFrame", "DailyTidiesSettingsScroll", f, "UIPanelScrollFrameTemplate")
@@ -164,6 +173,7 @@ local function CreateSettingsFrame()
         -- settings window opens.
         autoAcceptCB:SetChecked(autoAcceptCB.getValue())
         autoTurnInCB:SetChecked(autoTurnInCB.getValue())
+        debugCB:SetChecked(debugCB.getValue())
 
         local count = RefreshChainList()
         local prev = nil

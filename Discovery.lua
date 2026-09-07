@@ -122,14 +122,31 @@ local function timestamp()
     return date("%H:%M:%S")
 end
 
-local function AddLine(fmt, ...)
+-- Writes to the copyable log window/DB only -- never to chat, so even
+-- with Debug logging on, routine tracing never spams the chat window.
+local function LogOnly(fmt, ...)
     local text = string.format(fmt, ...)
     local line = "[" .. timestamp() .. "] " .. text
     table.insert(DailyTidiesLogDB, line)
     if DailyTidiesLogEditBox then
         DailyTidiesLogEditBox:SetText(table.concat(DailyTidiesLogDB, "\n"))
     end
-    print("|cFF66CCFF[DailyTidies]|r " .. text)
+end
+
+-- Same, but also prints to chat -- reserved for rare, deliberate messages
+-- (login notice, /dtidy diag output), never for routine per-event tracing.
+local function AddLine(fmt, ...)
+    LogOnly(fmt, ...)
+    print("|cFF66CCFF[DailyTidies]|r " .. string.format(fmt, ...))
+end
+
+-- Routine per-event tracing (every gossip open, every quest detail, ...)
+-- only runs when Debug logging is turned on in Settings, and even then
+-- only writes to the log window, never to chat.
+local function DebugLine(fmt, ...)
+    if DailyTidiesDB.debugLogging then
+        LogOnly(fmt, ...)
+    end
 end
 
 local function dumpFields(prefix, entry)
@@ -137,7 +154,7 @@ local function dumpFields(prefix, entry)
     for k, v in pairs(entry) do
         table.insert(parts, tostring(k) .. "=" .. tostring(v))
     end
-    AddLine("%s %s", prefix, table.concat(parts, " "))
+    DebugLine("%s %s", prefix, table.concat(parts, " "))
 end
 
 -- ===== UI: copyable log window =====
@@ -251,7 +268,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     if event == "GOSSIP_SHOW" then
         local npcName = (UnitExists("npc") and UnitName("npc")) or "?"
-        AddLine("GOSSIP_SHOW npc=%s", npcName)
+        DebugLine("GOSSIP_SHOW npc=%s", npcName)
 
         if C_GossipInfo and C_GossipInfo.GetAvailableQuests then
             local avail = C_GossipInfo.GetAvailableQuests()
@@ -284,7 +301,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- client to check directly.
         if npcName == "Maerys" and GetNumGossipAvailableQuests and GetGossipAvailableQuests then
             local numAvailable = GetNumGossipAvailableQuests()
-            AddLine("GOSSIP debug available=%s active=%s autoTurnIn=%s autoAccept=%s",
+            DebugLine("GOSSIP debug available=%s active=%s autoTurnIn=%s autoAccept=%s",
                 tostring(numAvailable),
                 tostring(GetNumGossipActiveQuests and GetNumGossipActiveQuests()),
                 tostring(DailyTidiesDB.autoTurnIn), tostring(DailyTidiesDB.autoAcceptMaerys))
@@ -313,7 +330,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                         local questTitle = activeFields[(i - 1) * 4 + 1]
                         local isComplete = activeFields[(i - 1) * 4 + 4] -- fields are title, level, isTrivial, isComplete
                         if isComplete then
-                            AddLine("GOSSIP auto-select active[%d] of %d title=%s (turn-in)", i, numActive, tostring(questTitle))
+                            DebugLine("GOSSIP auto-select active[%d] of %d title=%s (turn-in)", i, numActive, tostring(questTitle))
                             SelectGossipActiveQuest(i)
                             break
                         end
@@ -330,7 +347,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 for i = 1, (numAvailable or 0) do
                     local questTitle = fields[(i - 1) * 5 + 1]
                     if not (questTitle and excluded[questTitle]) then
-                        AddLine("GOSSIP auto-select available[%d] of %d title=%s", i, numAvailable, tostring(questTitle))
+                        DebugLine("GOSSIP auto-select available[%d] of %d title=%s", i, numAvailable, tostring(questTitle))
                         SelectGossipAvailableQuest(i)
                         break
                     end
@@ -344,7 +361,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local title = GetTitleText()
         local objective = GetObjectiveText()
         local id = titleToID[title] or "?"
-        AddLine("QUEST_DETAIL id=%s title=%s objective=%s", tostring(id), tostring(title), tostring(objective))
+        DebugLine("QUEST_DETAIL id=%s title=%s objective=%s", tostring(id), tostring(title), tostring(objective))
         if title and objective then
             pendingObjective[title] = objective
         end
@@ -357,7 +374,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             local npcName = (UnitExists("npc") and UnitName("npc")) or (UnitExists("questnpc") and UnitName("questnpc")) or "?"
             if npcName == "Maerys" then
                 AcceptQuest()
-                AddLine("AUTO-ACCEPT title=%s", tostring(title))
+                DebugLine("AUTO-ACCEPT title=%s", tostring(title))
             end
         end
         return
@@ -367,7 +384,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local title = GetTitleText()
         local progress = GetProgressText()
         local id = titleToID[title] or "?"
-        AddLine("QUEST_PROGRESS id=%s title=%s progress=%s", tostring(id), tostring(title), tostring(progress))
+        DebugLine("QUEST_PROGRESS id=%s title=%s progress=%s", tostring(id), tostring(title), tostring(progress))
         return
     end
 
@@ -375,7 +392,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local title = GetTitleText()
         local id = titleToID[title] or "?"
         local money = GetRewardMoney and GetRewardMoney() or 0
-        AddLine("QUEST_COMPLETE id=%s title=%s money=%s", tostring(id), tostring(title), tostring(money))
+        DebugLine("QUEST_COMPLETE id=%s title=%s money=%s", tostring(id), tostring(title), tostring(money))
 
         if C_QuestLog and C_QuestLog.GetQuestLogRewardCurrencies then
             local currencies = C_QuestLog.GetQuestLogRewardCurrencies()
@@ -386,7 +403,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             for i = 1, 5 do
                 local ok, name, texture, numItems = pcall(GetQuestLogRewardCurrencyInfo, i)
                 if ok and name then
-                    AddLine("QUEST_COMPLETE_CURRENCY[%d] name=%s amount=%s", i, tostring(name), tostring(numItems))
+                    DebugLine("QUEST_COMPLETE_CURRENCY[%d] name=%s amount=%s", i, tostring(name), tostring(numItems))
                 end
             end
         end
@@ -398,7 +415,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             local npcName = (UnitExists("npc") and UnitName("npc")) or (UnitExists("questnpc") and UnitName("questnpc")) or "?"
             local numChoices = GetNumQuestChoices and GetNumQuestChoices() or 0
             if npcName == "Maerys" and numChoices <= 1 then
-                AddLine("AUTO-TURN-IN title=%s", tostring(title))
+                DebugLine("AUTO-TURN-IN title=%s", tostring(title))
                 GetQuestReward(1)
             end
         end
@@ -419,7 +436,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-        AddLine("QUEST_ACCEPTED index=%s eventArgID=%s logID=%s title=%s frequency=%s",
+        DebugLine("QUEST_ACCEPTED index=%s eventArgID=%s logID=%s title=%s frequency=%s",
             tostring(questLogIndex), tostring(eventArgID), tostring(logID), tostring(title), tostring(frequency))
 
         local bestID = logID or eventArgID
@@ -432,7 +449,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     if event == "QUEST_TURNED_IN" then
         local questID, xpReward, moneyReward = ...
-        AddLine("QUEST_TURNED_IN id=%s xp=%s money=%s", tostring(questID), tostring(xpReward), tostring(moneyReward))
+        DebugLine("QUEST_TURNED_IN id=%s xp=%s money=%s", tostring(questID), tostring(xpReward), tostring(moneyReward))
         Learn(questID, nil, nil)
         -- Witnessed live, right now: the one piece of "done TODAY" evidence
         -- the tracker can actually trust (a completed-flag alone can't be
@@ -449,9 +466,7 @@ SLASH_DAILYTIDIES1 = "/dtidy"
 SLASH_DAILYTIDIES2 = "/dailytidies"
 SlashCmdList["DAILYTIDIES"] = function(msg)
     msg = string.lower(msg or "")
-    if msg == "log" then
-        ToggleLogFrame()
-    elseif msg == "diag" then
+    if msg == "diag" then
         AddLine("DIAG ------------------------------")
         AddLine("DIAG IsQuestFlaggedCompleted exists=%s", tostring(IsQuestFlaggedCompleted ~= nil))
         AddLine("DIAG C_QuestLog exists=%s", tostring(C_QuestLog ~= nil))
