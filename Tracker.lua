@@ -47,7 +47,7 @@ local function buildWeeklyItems(activeTitles, lastWeeklyResetEpoch)
     for id, entry in pairs(DailyTidiesDB.quests or {}) do
         if entry.frequency ~= 1 then
             local title = entry.title or ("Quest " .. id)
-            table.insert(byID, { id = id, title = title, display = entry.display or title, completedAt = entry.completedAt })
+            table.insert(byID, { id = id, title = title, display = entry.display or title, completedAt = entry.completedAt, orbs = entry.orbs })
         end
     end
     table.sort(byID, function(a, b) return a.id < b.id end)
@@ -63,7 +63,7 @@ local function buildWeeklyItems(activeTitles, lastWeeklyResetEpoch)
         else
             status = "none"
         end
-        table.insert(items, { key = q.id, label = q.display, status = status })
+        table.insert(items, { key = q.id, label = q.display, status = status, orbs = q.orbs })
     end
     return items
 end
@@ -84,7 +84,7 @@ local function buildDailyChainItems(activeTitles, activeTierIDs, activeStage, la
                 groups[title] = {}
                 table.insert(order, title)
             end
-            table.insert(groups[title], { id = id, display = entry.display or entry.title, completedAt = entry.completedAt })
+            table.insert(groups[title], { id = id, display = entry.display or entry.title, completedAt = entry.completedAt, orbs = entry.orbs })
         end
     end
     table.sort(order)
@@ -152,9 +152,14 @@ local function buildDailyChainItems(activeTitles, activeTierIDs, activeStage, la
             table.insert(pips, { roman = toRoman(i), state = state })
         end
 
+        local display = tiers[1].display
+        if tiers[1].orbs then
+            display = string.format("%s (%d orbs)", display, tiers[1].orbs)
+        end
+
         table.insert(items, {
             key = title,
-            display = tiers[1].display,
+            display = display,
             pips = pips,
             touchedToday = touchedToday,
         })
@@ -231,7 +236,7 @@ local function acquireDailyRow(pool, index, parent)
         row.dot:SetWidth(10)
         row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.name:SetPoint("LEFT", row.dot, "RIGHT", 2, 0)
-        row.name:SetWidth(150)
+        row.name:SetWidth(200)
         row.name:SetJustifyH("LEFT")
         row.name:SetTextColor(ROW_COLOR.r, ROW_COLOR.g, ROW_COLOR.b)
         row.pips = {}
@@ -408,8 +413,18 @@ local function Refresh()
     local dailyCollapsed = DailyTidiesDB.collapsed.daily
     local weeklyCollapsed = DailyTidiesDB.collapsed.weekly
 
+    local weeklyOrbs = nil
+    for _, item in ipairs(weeklyItems) do
+        if item.orbs then
+            weeklyOrbs = item.orbs
+            break
+        end
+    end
+
     dailyHeader:SetText(string.format("%s Daily chores", dailyCollapsed and COLLAPSE_ICON.closed or COLLAPSE_ICON.open))
-    weeklyHeader:SetText(string.format("%s Weekly raid kills: %d/%d", weeklyCollapsed and COLLAPSE_ICON.closed or COLLAPSE_ICON.open, weeklyDone, math.max(WEEKLY_TOTAL_HINT, #weeklyItems)))
+    weeklyHeader:SetText(string.format("%s Weekly raid kills: %d/%d%s",
+        weeklyCollapsed and COLLAPSE_ICON.closed or COLLAPSE_ICON.open, weeklyDone, math.max(WEEKLY_TOTAL_HINT, #weeklyItems),
+        weeklyOrbs and string.format(" (each %d orbs)", weeklyOrbs) or ""))
 
     local shownDaily = dailyCollapsed and {} or dailyItems
     local shownWeekly = weeklyCollapsed and {} or weeklyItems

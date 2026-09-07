@@ -33,6 +33,24 @@ local FRIENDLY_NAMES = {
     ["What the Stone Kept"] = "Archavon - Vault of Archavon",
 }
 
+-- Orbs of Lost Memories granted per chain, confirmed by the user via the
+-- reward-grant spell IDs (2026-09-07). Only the tier-1 amount is known --
+-- unconfirmed whether higher tiers pay out more.
+local ORB_REWARDS = {
+    ["A Life, Lived Through"] = 5,
+    ["The Whole Board"] = 5,
+    ["One More Door"] = 10,
+    ["Everything, Given Up"] = 20,
+    ["The Frozen Heart"] = 8,
+    ["The Maddening Deep"] = 8,
+    ["The Last Contender"] = 8,
+    ["The Throne at the Top"] = 8,
+    ["Embers Beneath the Garden"] = 8,
+    ["The Shape She Wears"] = 8,
+    ["The Clutch Below"] = 8,
+    ["What the Stone Kept"] = 8,
+}
+
 -- Known-good seed from live testing on 2026-09-06, so the tracker has data
 -- before Discovery re-learns everything from scratch on a fresh install.
 local SEED_QUESTS = {
@@ -69,6 +87,7 @@ local function Learn(id, title, frequency, objective, silent)
     if title then
         entry.title = title
         entry.display = entry.display or FRIENDLY_NAMES[title]
+        entry.orbs = entry.orbs or ORB_REWARDS[title]
     end
     if frequency ~= nil then
         entry.frequency = frequency
@@ -111,6 +130,9 @@ local function ApplySeedsAndBackfill()
     for id, entry in pairs(DailyTidiesDB.quests) do
         if entry.title and not entry.display then
             entry.display = FRIENDLY_NAMES[entry.title]
+        end
+        if entry.title and not entry.orbs then
+            entry.orbs = ORB_REWARDS[entry.title]
         end
         if not entry.objective and SEED_QUESTS[id] and SEED_QUESTS[id].objective then
             entry.objective = SEED_QUESTS[id].objective
@@ -369,8 +391,13 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Opt-in: auto-accept every quest Maerys offers, so opening her
         -- conversation once picks everything up instead of clicking
         -- through each one. Gated strictly to her by name so this never
-        -- touches any other NPC's quest dialog.
-        if DailyTidiesDB.autoAcceptMaerys ~= false and AcceptQuest then
+        -- touches any other NPC's quest dialog. Also respects the
+        -- exclude list even here, not just in the gossip auto-select --
+        -- otherwise manually clicking an excluded chain's quest (instead
+        -- of letting auto-select skip past it) would still get it
+        -- auto-accepted against the player's own settings choice.
+        local excluded = DailyTidiesDB.excludedTitles or {}
+        if DailyTidiesDB.autoAcceptMaerys ~= false and AcceptQuest and not (title and excluded[title]) then
             local npcName = (UnitExists("npc") and UnitName("npc")) or (UnitExists("questnpc") and UnitName("questnpc")) or "?"
             if npcName == "Maerys" then
                 AcceptQuest()

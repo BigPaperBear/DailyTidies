@@ -2,7 +2,7 @@
 ## Title: |cFF66CCFFDaily Tidies|r
 ## Notes: Tracks Maerys' daily/weekly Orbs of Lost Memories chores on Ebonhold. Self-learns quest IDs; /dtidy for tracker, /dtidy log for raw discovery log.
 ## SavedVariables: DailyTidiesLogDB, DailyTidiesDB
-## Version: 0.9.1
+## Version: 0.10.0
 
 Discovery.lua
 Sync.lua
