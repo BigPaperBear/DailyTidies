@@ -11,14 +11,14 @@ The addon learns Maerys' quests automatically as you play. You do not need to se
 - Learns quests automatically. Picks up every quest Maerys offers, including new stages as your daily chains go up.
 - Daily chores: each daily chain shows its current stage (x1, x2, x3, and so on) with a status of done, in progress, or not started.
 - Weekly raid kills: shows every known weekly quest with its status and a count of how many are done.
-- Opens automatically when you log in. You can move it and resize it. It will not go off screen.
+- Opens automatically when you log in. You can move it and resize it. It will not go off-screen.
 - Minimap button: click it to open or close the tracker. Works with minimap button addons that collect other buttons.
 - Discovery log: `/dtidy log` shows a raw log you can copy. Useful if you want to report a new quest stage.
 
 ## Install
 
 1. Download the latest release zip from Releases.
-2. Extract it into `World of Warcraft\Interface\AddOns\` so you get `Interface\AddOns\DailyTidies\*.lua` (not a folder inside another folder).
+2. Extract it into `World of Warcraft\Interface\AddOns\`.
 3. Type `/reload` or restart WoW.
 
 ## Slash commands
@@ -31,6 +31,6 @@ The addon learns Maerys' quests automatically as you play. You do not need to se
 
 ## Compatibility
 
-- WoW 3.3.5a, Interface 30403 (Ebonhold's client)
+- WoW 3.3.5
 - Server: Project Ebonhold
 - No other addons needed
