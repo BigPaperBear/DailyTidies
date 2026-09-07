@@ -19,7 +19,7 @@ button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight"
 local icon = button:CreateTexture(nil, "BACKGROUND")
 icon:SetSize(20, 20)
 icon:SetPoint("CENTER", 0, 1)
-icon:SetTexture("Interface\\Icons\\INV_Misc_Orb_04")
+icon:SetTexture("Interface\\AddOns\\DailyTidies\\Textures\\orb_icon.blp")
 
 local overlay = button:CreateTexture(nil, "OVERLAY")
 overlay:SetSize(53, 53)
@@ -47,8 +47,12 @@ button:SetScript("OnDragStop", function(self)
     self:SetScript("OnUpdate", nil)
 end)
 
-button:SetScript("OnClick", function()
-    if DailyTidiesTracker and DailyTidiesTracker.Toggle then
+button:SetScript("OnClick", function(self, mouseButton)
+    if mouseButton == "RightButton" then
+        if DailyTidiesSettings and DailyTidiesSettings.Toggle then
+            DailyTidiesSettings.Toggle()
+        end
+    elseif DailyTidiesTracker and DailyTidiesTracker.Toggle then
         DailyTidiesTracker.Toggle()
     end
 end)
@@ -56,7 +60,8 @@ end)
 button:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Daily Tidies")
-    GameTooltip:AddLine("Click to toggle the tracker", 1, 1, 1)
+    GameTooltip:AddLine("Left-click: toggle the tracker", 1, 1, 1)
+    GameTooltip:AddLine("Right-click: settings", 1, 1, 1)
     GameTooltip:Show()
 end)
 

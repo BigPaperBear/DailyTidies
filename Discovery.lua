@@ -38,24 +38,29 @@ local FRIENDLY_NAMES = {
 local SEED_QUESTS = {
     [601000] = { title = "A Life, Lived Through", frequency = 1, objective = "Reach level 80 in a single run, then return to Maerys." },
     [601100] = { title = "A Life, Lived Through", frequency = 1, objective = "Reach level 80 in a single run 2 times, then return to Maerys." },
-    [601001] = { title = "One More Door", frequency = 1 },
-    [601002] = { title = "Everything, Given Up", frequency = 1 },
-    [601003] = { title = "The Whole Board", frequency = 1 },
-    [601010] = { title = "The Frozen Heart" },
-    [601011] = { title = "The Maddening Deep" },
-    [601012] = { title = "The Last Contender" },
-    [601013] = { title = "The Throne at the Top" },
-    [601014] = { title = "Embers Beneath the Garden" },
-    [601015] = { title = "The Shape She Wears" },
-    [601016] = { title = "The Clutch Below" },
-    [601017] = { title = "What the Stone Kept" },
+    [601001] = { title = "One More Door", frequency = 1, objective = "Complete one dungeon through the Dungeon Finder, then return to Maerys." },
+    [601200] = { title = "One More Door", frequency = 1, objective = "Complete 2 dungeons through the Dungeon Finder, then return to Maerys." },
+    [601002] = { title = "Everything, Given Up", frequency = 1, objective = "Complete a Prestige, then return to Maerys." },
+    [601003] = { title = "The Whole Board", frequency = 1, objective = "Complete one Callboard objective of each type - open world, dungeon, raid and profession - then return to Maerys." },
+    [601010] = { title = "The Frozen Heart", objective = "Defeat Kel'Thuzad in Naxxramas, then return to Maerys." },
+    [601011] = { title = "The Maddening Deep", objective = "Defeat Yogg-Saron in Ulduar, then return to Maerys." },
+    [601012] = { title = "The Last Contender", objective = "Defeat Anub'arak in the Trial of the Crusader, then return to Maerys." },
+    [601013] = { title = "The Throne at the Top", objective = "Defeat the Lich King in Icecrown Citadel, then return to Maerys." },
+    [601014] = { title = "Embers Beneath the Garden", objective = "Defeat Halion in the Ruby Sanctum, then return to Maerys." },
+    [601015] = { title = "The Shape She Wears", objective = "Defeat Onyxia in Onyxia's Lair, then return to Maerys." },
+    [601016] = { title = "The Clutch Below", objective = "Defeat Sartharion in the Obsidian Sanctum, then return to Maerys." },
+    [601017] = { title = "What the Stone Kept", objective = "Defeat Archavon the Stone Watcher in the Vault of Archavon, then return to Maerys." },
 }
 
-local function Learn(id, title, frequency, objective)
+-- silent = true for seed data and quests merged in from another player's
+-- sync broadcast -- neither is a fresh local discovery, so neither should
+-- re-trigger a broadcast of its own (that would echo forever).
+local function Learn(id, title, frequency, objective, silent)
     id = tonumber(id)
     if not id or id < MAERYS_ID_MIN or id > MAERYS_ID_MAX then
         return
     end
+    local isNew = not DailyTidiesDB.quests[id]
     local entry = DailyTidiesDB.quests[id]
     if not entry then
         entry = { firstSeen = time() }
@@ -72,7 +77,19 @@ local function Learn(id, title, frequency, objective)
         entry.objective = objective
     end
     entry.lastSeen = time()
+
+    if isNew and not silent and DailyTidiesSync and DailyTidiesSync.OnLocalLearn then
+        DailyTidiesSync.OnLocalLearn(id, entry)
+    end
 end
+
+-- Sync.lua's bridge into the quest registry: always silent, since a quest
+-- merged in from another player was never a local discovery.
+DailyTidiesDiscovery = {
+    Learn = function(id, title, frequency, objective)
+        Learn(id, title, frequency, objective, true)
+    end,
+}
 
 -- NOT run at file scope: SavedVariables restore replaces the whole
 -- DailyTidiesDB global right after this file finishes loading (for any
@@ -83,15 +100,20 @@ local function ApplySeedsAndBackfill()
     DailyTidiesDB.quests = DailyTidiesDB.quests or {}
     for id, seed in pairs(SEED_QUESTS) do
         if not DailyTidiesDB.quests[id] then
-            Learn(id, seed.title, seed.frequency, seed.objective)
+            Learn(id, seed.title, seed.frequency, seed.objective, true)
         end
     end
 
-    -- Backfill display names onto quests already saved from before this
-    -- feature existed (Learn() above only touches new/re-seen entries).
-    for _, entry in pairs(DailyTidiesDB.quests) do
+    -- Backfill display names and objective text onto quests already saved
+    -- from before those fields existed (Learn() above only touches
+    -- new/re-seen entries). Missing objective text is what breaks the
+    -- tracker's "which tier is active right now" matching.
+    for id, entry in pairs(DailyTidiesDB.quests) do
         if entry.title and not entry.display then
             entry.display = FRIENDLY_NAMES[entry.title]
+        end
+        if not entry.objective and SEED_QUESTS[id] and SEED_QUESTS[id].objective then
+            entry.objective = SEED_QUESTS[id].objective
         end
     end
 end
@@ -176,6 +198,8 @@ local function CreateLogFrame()
         editBox:SetText("")
     end)
 
+    f:Hide() -- a new frame is shown by default; without this, the first
+              -- /dtidy log toggle hides it instead of showing it
     return f
 end
 
@@ -250,6 +274,69 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 end
             end
         end
+
+        -- C_GossipInfo is empty for her (confirmed by testing); the raw
+        -- legacy GetGossipAvailableQuests() still works. Snapshot which
+        -- titles she's currently offering (regardless of auto-accept) --
+        -- the tracker uses "tier 1 isn't being offered right now" as proof
+        -- that a higher active tier's earlier tiers were actually
+        -- completed this cycle, since there's no completed-flag on this
+        -- client to check directly.
+        if npcName == "Maerys" and GetNumGossipAvailableQuests and GetGossipAvailableQuests then
+            local numAvailable = GetNumGossipAvailableQuests()
+            AddLine("GOSSIP debug available=%s active=%s autoTurnIn=%s autoAccept=%s",
+                tostring(numAvailable),
+                tostring(GetNumGossipActiveQuests and GetNumGossipActiveQuests()),
+                tostring(DailyTidiesDB.autoTurnIn), tostring(DailyTidiesDB.autoAcceptMaerys))
+            local fields = numAvailable and numAvailable > 0 and { GetGossipAvailableQuests() } or {}
+            local availableTitles = {}
+            for i = 1, (numAvailable or 0) do
+                local questTitle = fields[(i - 1) * 5 + 1]
+                if questTitle then
+                    availableTitles[questTitle] = true
+                end
+            end
+            DailyTidiesDB.lastGossipAvailable = availableTitles
+            DailyTidiesDB.lastGossipAt = time()
+
+            -- Auto-pick a completable quest from her ACTIVE list so its
+            -- turn-in screen (QUEST_COMPLETE) actually opens -- without
+            -- this, the auto-turn-in handler on QUEST_COMPLETE never gets
+            -- a chance to fire, since GetGossipAvailableQuests() only
+            -- covers quests you haven't accepted yet, not ones ready to
+            -- hand in.
+            if DailyTidiesDB.autoTurnIn and GetNumGossipActiveQuests and GetGossipActiveQuests and SelectGossipActiveQuest then
+                local numActive = GetNumGossipActiveQuests()
+                if numActive and numActive > 0 then
+                    local activeFields = { GetGossipActiveQuests() }
+                    for i = 1, numActive do
+                        local questTitle = activeFields[(i - 1) * 4 + 1]
+                        local isComplete = activeFields[(i - 1) * 4 + 4] -- fields are title, level, isTrivial, isComplete
+                        if isComplete then
+                            AddLine("GOSSIP auto-select active[%d] of %d title=%s (turn-in)", i, numActive, tostring(questTitle))
+                            SelectGossipActiveQuest(i)
+                            break
+                        end
+                    end
+                end
+            end
+
+            -- Auto-pick the first NON-excluded available quest, which
+            -- fires QUEST_DETAIL and lets the auto-accept handler above
+            -- run. Only ever picks quest options, never anything else in
+            -- her gossip menu.
+            if DailyTidiesDB.autoAcceptMaerys ~= false and SelectGossipAvailableQuest then
+                local excluded = DailyTidiesDB.excludedTitles or {}
+                for i = 1, (numAvailable or 0) do
+                    local questTitle = fields[(i - 1) * 5 + 1]
+                    if not (questTitle and excluded[questTitle]) then
+                        AddLine("GOSSIP auto-select available[%d] of %d title=%s", i, numAvailable, tostring(questTitle))
+                        SelectGossipAvailableQuest(i)
+                        break
+                    end
+                end
+            end
+        end
         return
     end
 
@@ -260,6 +347,18 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         AddLine("QUEST_DETAIL id=%s title=%s objective=%s", tostring(id), tostring(title), tostring(objective))
         if title and objective then
             pendingObjective[title] = objective
+        end
+
+        -- Opt-in: auto-accept every quest Maerys offers, so opening her
+        -- conversation once picks everything up instead of clicking
+        -- through each one. Gated strictly to her by name so this never
+        -- touches any other NPC's quest dialog.
+        if DailyTidiesDB.autoAcceptMaerys ~= false and AcceptQuest then
+            local npcName = (UnitExists("npc") and UnitName("npc")) or (UnitExists("questnpc") and UnitName("questnpc")) or "?"
+            if npcName == "Maerys" then
+                AcceptQuest()
+                AddLine("AUTO-ACCEPT title=%s", tostring(title))
+            end
         end
         return
     end
@@ -289,6 +388,18 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 if ok and name then
                     AddLine("QUEST_COMPLETE_CURRENCY[%d] name=%s amount=%s", i, tostring(name), tostring(numItems))
                 end
+            end
+        end
+
+        -- Opt-in, off by default: turn the quest in automatically, but
+        -- only when there's a single reward -- never guess between
+        -- multiple reward choices for the player.
+        if DailyTidiesDB.autoTurnIn and GetQuestReward then
+            local npcName = (UnitExists("npc") and UnitName("npc")) or (UnitExists("questnpc") and UnitName("questnpc")) or "?"
+            local numChoices = GetNumQuestChoices and GetNumQuestChoices() or 0
+            if npcName == "Maerys" and numChoices <= 1 then
+                AddLine("AUTO-TURN-IN title=%s", tostring(title))
+                GetQuestReward(1)
             end
         end
         return
@@ -323,6 +434,13 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local questID, xpReward, moneyReward = ...
         AddLine("QUEST_TURNED_IN id=%s xp=%s money=%s", tostring(questID), tostring(xpReward), tostring(moneyReward))
         Learn(questID, nil, nil)
+        -- Witnessed live, right now: the one piece of "done TODAY" evidence
+        -- the tracker can actually trust (a completed-flag alone can't be
+        -- told apart from a completion from before the last daily reset).
+        local entry = DailyTidiesDB.quests[tonumber(questID)]
+        if entry then
+            entry.completedAt = time()
+        end
         return
     end
 end)
@@ -333,6 +451,32 @@ SlashCmdList["DAILYTIDIES"] = function(msg)
     msg = string.lower(msg or "")
     if msg == "log" then
         ToggleLogFrame()
+    elseif msg == "diag" then
+        AddLine("DIAG ------------------------------")
+        AddLine("DIAG IsQuestFlaggedCompleted exists=%s", tostring(IsQuestFlaggedCompleted ~= nil))
+        AddLine("DIAG C_QuestLog exists=%s", tostring(C_QuestLog ~= nil))
+        AddLine("DIAG GetNumQuestLogEntries exists=%s", tostring(GetNumQuestLogEntries ~= nil))
+        AddLine("DIAG GetQuestLogTitle exists=%s", tostring(GetQuestLogTitle ~= nil))
+        AddLine("DIAG GetQuestResetTime exists=%s value=%s", tostring(GetQuestResetTime ~= nil),
+            tostring(GetQuestResetTime and GetQuestResetTime()))
+        AddLine("DIAG IsAddOnLoaded(Blizzard_QuestLog)=%s", tostring(IsAddOnLoaded and IsAddOnLoaded("Blizzard_QuestLog")))
+        AddLine("DIAG QuestLogFrame exists=%s", tostring(_G.QuestLogFrame ~= nil))
+
+        if IsQuestFlaggedCompleted then
+            for id in pairs(DailyTidiesDB.quests or {}) do
+                local ok, result = pcall(IsQuestFlaggedCompleted, id)
+                AddLine("DIAG IsQuestFlaggedCompleted(%d) ok=%s result=%s", id, tostring(ok), tostring(result))
+            end
+        end
+
+        if GetNumQuestLogEntries then
+            AddLine("DIAG GetNumQuestLogEntries()=%s", tostring(GetNumQuestLogEntries()))
+        end
+        AddLine("DIAG ------------------------------")
+        ToggleLogFrame()
+    elseif msg == "autoaccept" then
+        DailyTidiesDB.autoAcceptMaerys = (DailyTidiesDB.autoAcceptMaerys == false)
+        print("|cFF66CCFF[DailyTidies]|r Auto-accept from Maerys: " .. (DailyTidiesDB.autoAcceptMaerys and "ON" or "OFF"))
     elseif msg == "clear" then
         wipe(DailyTidiesLogDB)
         if DailyTidiesLogEditBox then

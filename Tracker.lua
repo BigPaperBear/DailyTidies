@@ -7,24 +7,59 @@ DailyTidiesTracker = {}
 
 local WEEKLY_TOTAL_HINT = 8  -- known concurrent weekly raid-kill slots; grows if more are learned
 
+local ROMAN = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV" }
+local function toRoman(n)
+    return ROMAN[n] or tostring(n)
+end
+
+-- Neither IsQuestFlaggedCompleted nor C_QuestLog exist on this client
+-- (confirmed via /dtidy diag: both nil, even with the quest log UI
+-- already loaded). The only "done" signal this addon can trust is a
+-- turn-in it personally witnessed (Discovery.lua's QUEST_TURNED_IN
+-- handler stamps entry.completedAt), checked against the most recent
+-- reset. That means a quest completed before this addon was watching
+-- won't show as done until it's completed again after this update.
+local function computeLastDailyResetEpoch()
+    if not GetQuestResetTime then
+        return nil
+    end
+    local secondsUntilReset = GetQuestResetTime()
+    if not secondsUntilReset or secondsUntilReset <= 0 then
+        return nil
+    end
+    return time() + secondsUntilReset - 86400
+end
+
+local function computeLastWeeklyResetEpoch()
+    if not C_DateAndTime or not C_DateAndTime.GetSecondsUntilWeeklyReset then
+        return nil
+    end
+    local secondsUntilReset = C_DateAndTime.GetSecondsUntilWeeklyReset()
+    if not secondsUntilReset or secondsUntilReset <= 0 then
+        return nil
+    end
+    return time() + secondsUntilReset - (7 * 86400)
+end
+
 -- Weekly quests don't escalate tiers: one row per learned id.
-local function buildWeeklyItems(activeTitles)
+local function buildWeeklyItems(activeTitles, lastWeeklyResetEpoch)
     local byID = {}
     for id, entry in pairs(DailyTidiesDB.quests or {}) do
         if entry.frequency ~= 1 then
             local title = entry.title or ("Quest " .. id)
-            table.insert(byID, { id = id, title = title, display = entry.display or title })
+            table.insert(byID, { id = id, title = title, display = entry.display or title, completedAt = entry.completedAt })
         end
     end
     table.sort(byID, function(a, b) return a.id < b.id end)
 
     local items = {}
     for _, q in ipairs(byID) do
+        local doneThisWeek = q.completedAt and lastWeeklyResetEpoch and q.completedAt >= lastWeeklyResetEpoch
         local status
-        if IsQuestFlaggedCompleted and IsQuestFlaggedCompleted(q.id) then
-            status = "done"
-        elseif activeTitles[q.title] then
+        if activeTitles[q.title] then
             status = "active"
+        elseif doneThisWeek then
+            status = "done"
         else
             status = "none"
         end
@@ -35,9 +70,12 @@ end
 
 -- Daily chores escalate tiers under the SAME title (e.g. "A Life, Lived
 -- Through" 601000 -> 601100 -> ...), only the objective text and questID
--- change per tier. Group by title and show just the current tier's state
--- instead of a flat, ever-growing list of every tier ever seen.
-local function buildDailyChainItems(activeTitles, activeStage)
+-- change per tier. One row per chain, with a pip per known tier (I, II,
+-- III, ...) instead of one row per tier -- lets you see the whole chain's
+-- progress (which tiers are done, which is active, which aren't reached
+-- yet) without the row count growing forever as new tiers get discovered.
+
+local function buildDailyChainItems(activeTitles, activeTierIDs, activeStage, lastResetEpoch, lastGossipAvailable)
     local groups, order = {}, {}
     for id, entry in pairs(DailyTidiesDB.quests or {}) do
         if entry.frequency == 1 then
@@ -46,7 +84,7 @@ local function buildDailyChainItems(activeTitles, activeStage)
                 groups[title] = {}
                 table.insert(order, title)
             end
-            table.insert(groups[title], { id = id, objective = entry.objective, title = title, display = entry.display or title })
+            table.insert(groups[title], { id = id, display = entry.display or entry.title, completedAt = entry.completedAt })
         end
     end
     table.sort(order)
@@ -56,54 +94,101 @@ local function buildDailyChainItems(activeTitles, activeStage)
         local tiers = groups[title]
         table.sort(tiers, function(a, b) return a.id < b.id end)
 
-        -- Registry is account-wide (shared across characters), so it can
-        -- hold tiers a fresh character never unlocked yet. The current
-        -- tier is the LOWEST one not yet flagged completed on THIS
-        -- character; if every known tier is completed, show the highest
-        -- one as done. Stage number = the tier's position in our
-        -- learned-tier list (tiers only ever go up, one at a time), which
-        -- is what "Reach level 80 1 time / 2 times / 3 times..." maps to.
-        local current, currentStage = tiers[#tiers], #tiers
-        for i = 1, #tiers do
-            if not (IsQuestFlaggedCompleted and IsQuestFlaggedCompleted(tiers[i].id)) then
-                current, currentStage = tiers[i], i
-                break
+        -- Which tier position(s) are active right now. An exact
+        -- objective-text match is authoritative; if the title is active
+        -- but this exact tier's text isn't on file yet (a brand new
+        -- tier), fall back to the regex-extracted "N times" stage number.
+        local activeIndices = {}
+        local matched = activeTierIDs[title]
+        if matched and next(matched) then
+            for i, t in ipairs(tiers) do
+                if matched[t.id] then
+                    activeIndices[i] = true
+                end
+            end
+        elseif activeTitles[title] then
+            activeIndices[activeStage[title] or 1] = true
+        end
+
+        -- Lowest currently-active tier, if any: being on tier N>1 PROVES
+        -- tiers 1..N-1 were completed at some point (tiers only unlock in
+        -- order). Whether that proof counts as "this cycle" depends on
+        -- whether Maerys is still withholding tier 1 -- if her last known
+        -- available-quest list (from the most recent GOSSIP_SHOW) does
+        -- NOT offer this chain's base quest, no reset has happened since
+        -- those lower tiers were cleared, so they count as done. This is
+        -- the only way to recover pre-existing progress on a client with
+        -- no completed-flag API at all.
+        local lowestActiveIndex = nil
+        for i in pairs(activeIndices) do
+            if not lowestActiveIndex or i < lowestActiveIndex then
+                lowestActiveIndex = i
             end
         end
+        local provenDoneByGossip = lowestActiveIndex and lowestActiveIndex > 1
+            and lastGossipAvailable and not lastGossipAvailable[title]
 
-        -- Live quest log objective text overrides the registry-derived
-        -- stage: it's correct even if this tier's ID was never learned.
-        if activeStage[title] then
-            currentStage = activeStage[title]
+        -- "Done" is otherwise judged per tier ON ITS OWN -- never implied
+        -- from a different tier merely being active (that was the earlier
+        -- bug: a leftover higher tier someone forgot to turn in doesn't
+        -- prove a LOWER tier was done today). No native completed-flag
+        -- exists on this client, so the witnessed-turn-in timestamp is
+        -- the fallback signal.
+        local pips, touchedToday = {}, false
+        for i, t in ipairs(tiers) do
+            local doneToday = (provenDoneByGossip and i < lowestActiveIndex)
+                or (t.completedAt and lastResetEpoch and t.completedAt >= lastResetEpoch)
+            local state
+            if activeIndices[i] then
+                state = "active"
+            elseif doneToday then
+                state = "done"
+            else
+                state = "none"
+            end
+            if state ~= "none" then
+                touchedToday = true
+            end
+            table.insert(pips, { roman = toRoman(i), state = state })
         end
 
-        local status
-        if activeTitles[title] then
-            status = "active"
-        elseif IsQuestFlaggedCompleted and IsQuestFlaggedCompleted(current.id) then
-            status = "done"
-        else
-            status = "none"
-        end
-
-        table.insert(items, { key = title, label = string.format("%s (x%d)", current.display, currentStage), status = status })
+        table.insert(items, {
+            key = title,
+            display = tiers[1].display,
+            pips = pips,
+            touchedToday = touchedToday,
+        })
     end
     return items
 end
 
 -- ===== UI =====
 
-local frame, dailyHeader, weeklyHeader, dailyHeaderBtn, weeklyHeaderBtn, dailyRows, weeklyRows
+local frame, scrollChild, dailyHeader, weeklyHeader, dailyHeaderBtn, weeklyHeaderBtn, dailyRows, weeklyRows
 
 local COLLAPSE_ICON = { open = "|cFF888888-|r", closed = "|cFF888888+|r" }
 
 local ROW_COLOR = { r = 0.85, g = 0.85, b = 0.85 }
+local ROW_HEIGHT = 16
 
+local STATUS_TEXT = {
+    done = "|cFF00FF00V|r",
+    active = "|cFFFFFF00o|r",
+    none = "|cFF888888-|r",
+}
+
+local PIP_COLOR = {
+    active = "|cFFFFD100%s|r", -- gold: current tier
+    done = "|cFF33CC33%s|r",   -- green: already cleared today
+    none = "|cFF555555%s|r",   -- grey: not reached yet
+}
+
+-- Weekly rows: status glyph + name, unchanged from before.
 local function acquireRow(pool, index, parent)
     local row = pool[index]
     if not row then
         row = CreateFrame("Frame", nil, parent)
-        row:SetSize(340, 16)
+        row:SetSize(340, ROW_HEIGHT)
         row.status = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.status:SetPoint("LEFT", row, "LEFT", 2, 0)
         row.status:SetWidth(16)
@@ -115,6 +200,83 @@ local function acquireRow(pool, index, parent)
         pool[index] = row
     end
     return row
+end
+
+local function layoutRows(pool, items, anchorTo)
+    local prev = anchorTo
+    for i, item in ipairs(items) do
+        local row = acquireRow(pool, i, scrollChild)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, i == 1 and -6 or 0)
+        row:Show()
+
+        row.status:SetText(STATUS_TEXT[item.status] or STATUS_TEXT.none)
+        row.title:SetText(item.label)
+        prev = row
+    end
+    for i = #items + 1, #pool do
+        pool[i]:Hide()
+    end
+    return prev
+end
+
+-- Daily rows: a "touched today" dot + chain name + a pip per known tier.
+local function acquireDailyRow(pool, index, parent)
+    local row = pool[index]
+    if not row then
+        row = CreateFrame("Frame", nil, parent)
+        row:SetSize(340, ROW_HEIGHT)
+        row.dot = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.dot:SetPoint("LEFT", row, "LEFT", 2, 0)
+        row.dot:SetWidth(10)
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.name:SetPoint("LEFT", row.dot, "RIGHT", 2, 0)
+        row.name:SetWidth(150)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetTextColor(ROW_COLOR.r, ROW_COLOR.g, ROW_COLOR.b)
+        row.pips = {}
+        pool[index] = row
+    end
+    return row
+end
+
+local function layoutDailyRows(pool, items, anchorTo)
+    local prev = anchorTo
+    for i, item in ipairs(items) do
+        local row = acquireDailyRow(pool, i, scrollChild)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, i == 1 and -6 or 0)
+        row:Show()
+
+        row.dot:SetText(item.touchedToday and "|cFF33CC33*|r" or "|cFF555555*|r")
+        row.name:SetText(item.display)
+
+        local pipAnchor = row.name
+        for pi, pip in ipairs(item.pips) do
+            local pipFS = row.pips[pi]
+            if not pipFS then
+                pipFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                row.pips[pi] = pipFS
+            end
+            pipFS:ClearAllPoints()
+            pipFS:SetPoint("LEFT", pipAnchor, "RIGHT", pi == 1 and 6 or 3, 0)
+            pipFS:SetText(string.format(PIP_COLOR[pip.state] or PIP_COLOR.none, pip.roman))
+            pipFS:Show()
+            pipAnchor = pipFS
+        end
+        for pi = #item.pips + 1, #row.pips do
+            row.pips[pi]:Hide()
+        end
+
+        prev = row
+    end
+    for i = #items + 1, #pool do
+        pool[i]:Hide()
+        for _, pipFS in ipairs(pool[i].pips) do
+            pipFS:Hide()
+        end
+    end
+    return prev
 end
 
 -- No guaranteed C_QuestLog namespace on this client (nil until the
@@ -130,13 +292,6 @@ end
 -- collapsed state afterward. This all happens synchronously with no
 -- frame yield in between, so it never paints on screen even if the
 -- player's real quest log window is open.
--- The registry only learns a tier's ID from a live event (gossip, accept,
--- turn-in). A tier already sitting in the quest log from before this
--- session (or before Discovery saw it) never fires those events, so the
--- registry alone can under-report which tier is active. The quest log's
--- own objective text always says "N times" for tier N+1 (tier 1 has no
--- count), so read that directly off the active quest log entry instead of
--- trusting the registry for the stage number.
 local function extractStageFromText(...)
     for i = 1, select("#", ...) do
         local text = select(i, ...)
@@ -151,9 +306,19 @@ local function extractStageFromText(...)
 end
 
 local function scanActiveQuestTitles()
-    local active, activeStage = {}, {}
+    local active, activeTierIDs, activeStage = {}, {}, {}
     if not GetNumQuestLogEntries then
-        return active, activeStage
+        return active, activeTierIDs, activeStage
+    end
+
+    -- Reverse lookup per title: known tier objective text -> questID, so a
+    -- live quest log entry can be matched to the EXACT known tier it is.
+    local objectiveIndex = {}
+    for id, entry in pairs(DailyTidiesDB.quests or {}) do
+        if entry.frequency == 1 and entry.objective and entry.title then
+            objectiveIndex[entry.title] = objectiveIndex[entry.title] or {}
+            objectiveIndex[entry.title][entry.objective] = id
+        end
     end
 
     local collapsedHeaderTitles = {}
@@ -175,13 +340,21 @@ local function scanActiveQuestTitles()
         local ok, title, level, questTag, suggestedGroup, isHeader = pcall(GetQuestLogTitle, index)
         if ok and not isHeader and title then
             active[title] = true
-            if not activeStage[title] and SelectQuestLogEntry and GetQuestLogQuestText then
+            if SelectQuestLogEntry and GetQuestLogQuestText then
                 if pcall(SelectQuestLogEntry, index) then
                     local textOk, description, objectives = pcall(GetQuestLogQuestText)
                     if textOk then
-                        local stage = extractStageFromText(objectives, description)
-                        if stage then
-                            activeStage[title] = stage
+                        local titleIndex = objectiveIndex[title]
+                        local matchedID = titleIndex and (titleIndex[description] or titleIndex[objectives])
+                        if matchedID then
+                            activeTierIDs[title] = activeTierIDs[title] or {}
+                            activeTierIDs[title][matchedID] = true
+                        end
+                        if not activeStage[title] then
+                            local stage = extractStageFromText(objectives, description)
+                            if stage then
+                                activeStage[title] = stage
+                            end
                         end
                     end
                 end
@@ -208,31 +381,7 @@ local function scanActiveQuestTitles()
         end
     end
 
-    return active, activeStage
-end
-
-local STATUS_TEXT = {
-    done = "|cFF00FF00V|r",
-    active = "|cFFFFFF00o|r",
-    none = "|cFF888888-|r",
-}
-
-local function layoutRows(pool, items, anchorTo)
-    local prev = anchorTo
-    for i, item in ipairs(items) do
-        local row = acquireRow(pool, i, frame)
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", prev, i == 1 and "BOTTOMLEFT" or "BOTTOMLEFT", 0, i == 1 and -6 or 0)
-        row:Show()
-
-        row.status:SetText(STATUS_TEXT[item.status] or STATUS_TEXT.none)
-        row.title:SetText(item.label)
-        prev = row
-    end
-    for i = #items + 1, #pool do
-        pool[i]:Hide()
-    end
-    return prev
+    return active, activeTierIDs, activeStage
 end
 
 local function Refresh()
@@ -245,9 +394,9 @@ local function Refresh()
     -- any DB saved before the "collapsed" key existed. Init it here instead.
     DailyTidiesDB.collapsed = DailyTidiesDB.collapsed or {}
 
-    local activeTitles, activeStage = scanActiveQuestTitles()
-    local dailyItems = buildDailyChainItems(activeTitles, activeStage)
-    local weeklyItems = buildWeeklyItems(activeTitles)
+    local activeTitles, activeTierIDs, activeStage = scanActiveQuestTitles()
+    local dailyItems = buildDailyChainItems(activeTitles, activeTierIDs, activeStage, computeLastDailyResetEpoch(), DailyTidiesDB.lastGossipAvailable)
+    local weeklyItems = buildWeeklyItems(activeTitles, computeLastWeeklyResetEpoch())
 
     local weeklyDone = 0
     for _, item in ipairs(weeklyItems) do
@@ -262,18 +411,49 @@ local function Refresh()
     dailyHeader:SetText(string.format("%s Daily chores", dailyCollapsed and COLLAPSE_ICON.closed or COLLAPSE_ICON.open))
     weeklyHeader:SetText(string.format("%s Weekly raid kills: %d/%d", weeklyCollapsed and COLLAPSE_ICON.closed or COLLAPSE_ICON.open, weeklyDone, math.max(WEEKLY_TOTAL_HINT, #weeklyItems)))
 
-    local lastDailyRow = layoutRows(dailyRows, dailyCollapsed and {} or dailyItems, dailyHeader)
+    local shownDaily = dailyCollapsed and {} or dailyItems
+    local shownWeekly = weeklyCollapsed and {} or weeklyItems
+
+    local lastDailyRow = layoutDailyRows(dailyRows, shownDaily, dailyHeader)
     weeklyHeader:ClearAllPoints()
     weeklyHeader:SetPoint("TOPLEFT", lastDailyRow, "BOTTOMLEFT", 0, -14)
     weeklyHeaderBtn:ClearAllPoints()
     weeklyHeaderBtn:SetPoint("TOPLEFT", weeklyHeader, "TOPLEFT", -2, 2)
-    layoutRows(weeklyRows, weeklyCollapsed and {} or weeklyItems, weeklyHeader)
+    layoutRows(weeklyRows, shownWeekly, weeklyHeader)
+
+    -- The row list lives in a scrollable area so the window itself never
+    -- has to grow tall as more quests get learned; resize the scroll
+    -- child to fit whatever got laid out instead.
+    local contentHeight = 8 + 16 + (#shownDaily * ROW_HEIGHT) + 6 + 14 + 16 + (#shownWeekly * ROW_HEIGHT) + 6 + 12
+    scrollChild:SetHeight(math.max(contentHeight, 1))
+end
+
+local function SaveFramePosition(f)
+    local point, _, relativePoint, x, y = f:GetPoint(1)
+    DailyTidiesDB.frame = DailyTidiesDB.frame or {}
+    DailyTidiesDB.frame.point = point
+    DailyTidiesDB.frame.relativePoint = relativePoint
+    DailyTidiesDB.frame.x = x
+    DailyTidiesDB.frame.y = y
+end
+
+local function SaveFrameSize(f)
+    DailyTidiesDB.frame = DailyTidiesDB.frame or {}
+    DailyTidiesDB.frame.width = f:GetWidth()
+    DailyTidiesDB.frame.height = f:GetHeight()
 end
 
 local function CreateTrackerFrame()
     local f = CreateFrame("Frame", "DailyTidiesTrackerFrame", UIParent)
-    f:SetSize(380, 320)
-    f:SetPoint("CENTER", 200, 0)
+    local saved = DailyTidiesDB.frame
+
+    f:SetSize((saved and saved.width) or 380, (saved and saved.height) or 320)
+    if saved and saved.point then
+        f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, saved.x or 0, saved.y or 0)
+    else
+        f:SetPoint("CENTER", 200, 0)
+    end
+
     f:SetFrameStrata("MEDIUM")
     f:SetMovable(true)
     f:SetResizable(true)
@@ -283,7 +463,10 @@ local function CreateTrackerFrame()
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        SaveFramePosition(self)
+    end)
     f:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -301,12 +484,29 @@ local function CreateTrackerFrame()
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", 2, 2)
     closeBtn:SetScript("OnClick", function() f:Hide() end)
 
-    dailyHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    dailyHeader:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -32)
+    -- Fixed-height scroll area for the row lists: the window stays a
+    -- constant size no matter how many quests get learned over time.
+    local scrollFrame = CreateFrame("ScrollFrame", "DailyTidiesTrackerScroll", f, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -32)
+    scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -28, 20)
+    scrollFrame:EnableMouseWheel(true)
+    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+        local newScroll = self:GetVerticalScroll() - delta * 20
+        newScroll = math.max(0, math.min(newScroll, self:GetVerticalScrollRange()))
+        self:SetVerticalScroll(newScroll)
+    end)
+
+    scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetWidth(340)
+    scrollChild:SetHeight(1)
+    scrollFrame:SetScrollChild(scrollChild)
+
+    dailyHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    dailyHeader:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -4)
     dailyHeader:SetJustifyH("LEFT")
     dailyHeader:SetTextColor(0.9, 0.75, 0.35)
 
-    dailyHeaderBtn = CreateFrame("Button", nil, f)
+    dailyHeaderBtn = CreateFrame("Button", nil, scrollChild)
     dailyHeaderBtn:SetSize(340, 16)
     dailyHeaderBtn:SetPoint("TOPLEFT", dailyHeader, "TOPLEFT", -2, 2)
     dailyHeaderBtn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight")
@@ -315,11 +515,11 @@ local function CreateTrackerFrame()
         Refresh()
     end)
 
-    weeklyHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    weeklyHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     weeklyHeader:SetJustifyH("LEFT")
     weeklyHeader:SetTextColor(0.5, 0.75, 0.95)
 
-    weeklyHeaderBtn = CreateFrame("Button", nil, f)
+    weeklyHeaderBtn = CreateFrame("Button", nil, scrollChild)
     weeklyHeaderBtn:SetSize(340, 16)
     weeklyHeaderBtn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight")
     weeklyHeaderBtn:SetScript("OnClick", function()
@@ -336,6 +536,7 @@ local function CreateTrackerFrame()
     resizeGrip:SetScript("OnMouseDown", function() f:StartSizing("BOTTOMRIGHT") end)
     resizeGrip:SetScript("OnMouseUp", function()
         f:StopMovingOrSizing()
+        SaveFrameSize(f)
         Refresh()
     end)
 
