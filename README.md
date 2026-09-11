@@ -1,5 +1,7 @@
 # Daily Tidies
 
+[![Downloads](https://img.shields.io/github/downloads/BigPaperBear/DailyTidies/total?style=flat-square&label=Downloads)](https://github.com/BigPaperBear/DailyTidies/releases)
+
 Tracks NPC Maerys' daily and weekly "Orbs of Lost Memories" quests on Ebonhold (WoW 3.3.5a).
 
 The addon learns Maerys' quests automatically as you play. You do not need to set anything up by hand.
